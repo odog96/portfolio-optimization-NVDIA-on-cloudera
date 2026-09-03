@@ -55,11 +55,12 @@ markers = [
 ]
 
 [tool.setuptools]
-packages = ["portfolio_optimization"]
+packages = ["portfolio_optimization", "portfolio_optimization.forecasting"]
 py-modules = []
 
 [tool.setuptools.package-dir]
 portfolio_optimization = "src"
+"portfolio_optimization.forecasting" = "src/forecasting"
 
 [tool.setuptools.package-data]
 "*" = ["*.csv", "*.pkl", "*.parquet"]

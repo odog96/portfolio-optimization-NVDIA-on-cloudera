@@ -1,0 +1,72 @@
+name: "NVIDIA Portfolio Optimization"
+description: >-
+  GPU-accelerated portfolio optimization powered by NVIDIA cuOpt.
+  Supports Mean-CVaR and Mean-Variance (Markowitz) optimization with
+  backtesting and dynamic rebalancing. Includes Jupyter notebooks and
+  an interactive Streamlit demo.
+author: "Cloudera"
+specification_version: 1.0
+prototype_version: 1.0
+date: "2026-09-01"
+
+environment_variables:
+  PORTFOLIO_OPT_DATASET:
+    default: "dow30"
+    description: >-
+      Stock universe to download on setup. Options: "dow30" (32 stocks,
+      fast), "sp100" (103 stocks), "sp500" (~390 stocks, slower download).
+      Data is fetched from Yahoo Finance via yfinance.
+    required: false
+
+runtimes:
+  - editor: PBJ Workbench
+    kernel: Python 3.12
+    edition: Nvidia GPU
+
+tasks:
+  - type: run_session
+    name: Install Dependencies
+    script: scripts/install_dependencies.py
+    short_summary: Install core Python packages (numpy, cvxpy, etc.)
+    kernel: python3
+    cpu: 2
+    memory: 8
+
+  - type: run_session
+    name: Install GPU Packages
+    script: scripts/install_gpu_packages.py
+    short_summary: Install NVIDIA cuOpt and cuML from NVIDIA PyPI
+    kernel: python3
+    cpu: 2
+    memory: 16
+    gpu: 1
+
+  - type: run_session
+    name: Download Stock Data
+    script: scripts/download_data.py
+    short_summary: Download historical stock prices via yfinance
+    kernel: python3
+    cpu: 2
+    memory: 4
+
+  - type: run_session
+    name: Validate GPU Pipeline
+    script: scripts/validate_gpu.py
+    short_summary: Run end-to-end GPU optimization smoke test
+    kernel: python3
+    cpu: 2
+    memory: 8
+    gpu: 1
+
+  - type: start_application
+    name: Portfolio Rebalancing Demo
+    subdomain: portfolio-opt
+    script: scripts/launch_streamlit.py
+    short_summary: Start the interactive Streamlit rebalancing demo
+    long_summary: >-
+      Launches the GPU vs CPU rebalancing comparison app. Requires a GPU
+      session. The app downloads data on first run if not already present.
+    kernel: python3
+    cpu: 2
+    memory: 16
+    gpu: 1
