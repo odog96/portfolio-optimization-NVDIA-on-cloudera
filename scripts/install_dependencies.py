@@ -34,7 +34,8 @@ run(
     "'lightgbm>=4.0' "
     "'arch>=7.0' "
     "'onnxmltools>=1.12' "
-    "'skl2onnx>=1.16'"
+    "'skl2onnx>=1.16' "
+    "'mlflow>=2.12'"
 )
 
 # Install the portfolio-optimization package in editable mode

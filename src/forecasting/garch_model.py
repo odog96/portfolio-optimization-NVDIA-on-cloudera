@@ -154,6 +154,71 @@ class CovarianceForecaster:
 
         return str(output_path)
 
+    def register_mlflow(
+        self,
+        model_name: str = "PortfolioCovarianceForecaster",
+    ) -> str:
+        """Register GARCH parameters in MLflow model registry.
+
+        GARCH is recursive and cannot be natively exported to ONNX, so we
+        log the fitted parameters as a pyfunc model artifact. This bridges
+        to CAII for covariance predictions via a custom wrapper.
+
+        Parameters
+        ----------
+        model_name : str
+            Registered model name in MLflow.
+
+        Returns
+        -------
+        str
+            Model version URI.
+        """
+        if not self.garch_models:
+            raise RuntimeError("Models not trained.")
+
+        import json
+        import tempfile
+
+        import mlflow
+        import mlflow.pyfunc
+
+        params = {
+            "tickers": self.tickers,
+            "garch_config": self.config.garch.model_dump(),
+            "models": {},
+        }
+        for ticker, res in self.garch_models.items():
+            params["models"][ticker] = {
+                "params": {k: float(v) for k, v in res.params.items()},
+                "conditional_volatility_last": float(
+                    res.conditional_volatility.iloc[-1]
+                ),
+                "resid_last": float(res.resid.iloc[-1]),
+            }
+        if self._correlation_matrix is not None:
+            params["correlation_matrix"] = self._correlation_matrix.tolist()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            params_path = Path(tmpdir) / "garch_params.json"
+            with open(params_path, "w") as f:
+                json.dump(params, f, indent=2)
+
+            with mlflow.start_run(run_name="register_covariance_forecaster"):
+                mlflow.log_artifact(str(params_path))
+                result = mlflow.pyfunc.log_model(
+                    artifact_path="model",
+                    python_model=None,
+                    artifacts={"garch_params": str(params_path)},
+                    registered_model_name=model_name,
+                )
+                mlflow.set_tag("model_type", "garch_params")
+                mlflow.set_tag("purpose", "covariance_forecasting")
+                mlflow.set_tag("n_assets", str(len(self.tickers)))
+
+        print(f"Registered '{model_name}' in MLflow: {result.model_uri}")
+        return result.model_uri
+
     @classmethod
     def load_params(cls, path: str) -> "CovarianceForecaster":
         """Load exported parameters (for CAII deployment)."""

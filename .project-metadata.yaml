@@ -50,6 +50,18 @@ tasks:
     memory: 4
 
   - type: run_session
+    name: Train Forecasting Models
+    script: scripts/train_and_register.py
+    short_summary: Train LightGBM + GARCH and register in MLflow
+    long_summary: >-
+      Trains a LightGBM model for expected returns and GARCH for
+      covariance forecasting. Exports ONNX and registers in the
+      MLflow model registry for CAII deployment.
+    kernel: python3
+    cpu: 2
+    memory: 8
+
+  - type: run_session
     name: Validate GPU Pipeline
     script: scripts/validate_gpu.py
     short_summary: Run end-to-end GPU optimization smoke test
@@ -57,6 +69,18 @@ tasks:
     cpu: 2
     memory: 8
     gpu: 1
+
+  - type: run_session
+    name: Deploy to CAII
+    script: scripts/deploy_to_caii.py
+    short_summary: Deploy returns forecaster to CAII inference endpoint
+    long_summary: >-
+      Deploys the registered ONNX model from MLflow to Cloudera AI
+      Inference Services. Falls back to manual instructions if
+      programmatic deployment is unavailable.
+    kernel: python3
+    cpu: 2
+    memory: 4
 
   - type: start_application
     name: Portfolio Rebalancing Demo

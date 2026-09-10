@@ -81,5 +81,9 @@ class ForecastingConfig(BaseModel):
     garch: GARCHConfig = Field(default_factory=GARCHConfig)
     caii_endpoint: Optional[str] = Field(
         default=None,
-        description="CAII endpoint URL for deployed model. None = use local model.",
+        description="CAII endpoint URL for returns model. None = use local model.",
+    )
+    caii_covariance_endpoint: Optional[str] = Field(
+        default=None,
+        description="CAII endpoint URL for covariance model. None = use local GARCH.",
     )

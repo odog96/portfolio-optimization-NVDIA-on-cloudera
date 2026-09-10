@@ -181,6 +181,66 @@ class ReturnsForecaster:
         onnxmltools.utils.save_model(onnx_model, str(output_path))
         return str(output_path)
 
+    def register_mlflow(
+        self,
+        model_name: str = "PortfolioReturnsForecaster",
+        sample_input: Optional[pd.DataFrame] = None,
+    ) -> str:
+        """Export to ONNX and register in MLflow model registry.
+
+        This is the minimal MLflow integration needed for CAII deployment.
+        No experiment tracking — just registers the model so CAII can find it.
+
+        Parameters
+        ----------
+        model_name : str
+            Registered model name in MLflow (CAII deploys from this).
+        sample_input : pd.DataFrame, optional
+            Sample input for signature inference.
+
+        Returns
+        -------
+        str
+            Model version URI (e.g., "models:/PortfolioReturnsForecaster/1").
+        """
+        if self.model is None:
+            raise RuntimeError("Model not trained.")
+
+        import mlflow
+        import mlflow.onnx
+        import onnxmltools
+        from onnxmltools.convert.lightgbm.operator_converters.LightGbm import (
+            convert_lightgbm,  # noqa: F401
+        )
+        from skl2onnx.common.data_types import FloatTensorType
+
+        n_features = len(self.feature_names)
+        initial_type = [("input", FloatTensorType([None, n_features]))]
+        onnx_model = onnxmltools.convert_lightgbm(
+            self.model, initial_types=initial_type, target_opset=15
+        )
+
+        signature = None
+        if sample_input is not None:
+            from mlflow.models import infer_signature
+
+            preds = self.model.predict(sample_input)
+            signature = infer_signature(sample_input, preds)
+
+        with mlflow.start_run(run_name="register_returns_forecaster"):
+            result = mlflow.onnx.log_model(
+                onnx_model=onnx_model,
+                artifact_path="model",
+                registered_model_name=model_name,
+                signature=signature,
+            )
+            mlflow.set_tag("model_type", "lightgbm_onnx")
+            mlflow.set_tag("purpose", "returns_forecasting")
+            mlflow.set_tag("forecast_horizon", str(self.config.forecast_horizon))
+
+        print(f"Registered '{model_name}' in MLflow: {result.model_uri}")
+        return result.model_uri
+
     def save(self, path: str) -> str:
         """Save native LightGBM model."""
         if self.model is None:
