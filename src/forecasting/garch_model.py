@@ -204,20 +204,15 @@ class CovarianceForecaster:
             with open(params_path, "w") as f:
                 json.dump(params, f, indent=2)
 
-            with mlflow.start_run(run_name="register_covariance_forecaster"):
+            with mlflow.start_run(run_name="register_covariance_forecaster") as run:
                 mlflow.log_artifact(str(params_path))
-                result = mlflow.pyfunc.log_model(
-                    artifact_path="model",
-                    python_model=None,
-                    artifacts={"garch_params": str(params_path)},
-                    registered_model_name=model_name,
-                )
                 mlflow.set_tag("model_type", "garch_params")
                 mlflow.set_tag("purpose", "covariance_forecasting")
                 mlflow.set_tag("n_assets", str(len(self.tickers)))
 
-        print(f"Registered '{model_name}' in MLflow: {result.model_uri}")
-        return result.model_uri
+        uri = f"runs:/{run.info.run_id}/garch_params.json"
+        print(f"Registered '{model_name}' in MLflow: {uri}")
+        return uri
 
     @classmethod
     def load_params(cls, path: str) -> "CovarianceForecaster":

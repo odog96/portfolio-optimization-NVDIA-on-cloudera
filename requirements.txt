@@ -1,0 +1,20 @@
+# Core (upper bounds match cudf-cu12 26.6 and mlflow 2.19)
+numpy>=2.0.0,<2.5
+pandas>=2.0,<2.4
+cvxpy>=1.9.2
+scikit-learn>=1.5
+matplotlib>=3.8
+seaborn>=0.13
+yfinance>=0.2.0
+pydantic>=2.12.5
+
+# Forecasting
+lightgbm>=4.0
+arch>=7.0
+onnxmltools>=1.12
+skl2onnx>=1.16
+mlflow==2.19.0
+onnxruntime>=1.16
+
+# Notebook kernel
+ipykernel>=7.1.0

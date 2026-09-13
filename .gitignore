@@ -50,6 +50,15 @@ Thumbs.db
 # Data files
 data/stock_data/*.csv
 
+# Personal setup notes (not for end users)
+SETUP_NOTES.md
+
+# Trained model artifacts
+models/
+
+# Script outputs (registration_info.json, etc.)
+outputs/
+
 # NV-BASE validation artifacts
 nv-base-output-*.html
 /BENCHMARK.md
