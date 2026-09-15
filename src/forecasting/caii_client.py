@@ -178,7 +178,8 @@ class ForecastClient:
         """Call CAII endpoint for covariance prediction.
 
         Falls back to local GARCH if no separate covariance endpoint is set,
-        since GARCH params are not natively ONNX-servable.
+        since GARCH params need a custom reconstruction step rather than a
+        standard servable model format.
         """
         if self.covariance_model is not None:
             return self.covariance_model.predict(prices)

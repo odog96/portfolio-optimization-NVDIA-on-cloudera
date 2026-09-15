@@ -11,10 +11,7 @@ pydantic>=2.12.5
 # Forecasting
 lightgbm>=4.0
 arch>=7.0
-onnxmltools>=1.12
-skl2onnx>=1.16
 mlflow==2.19.0
-onnxruntime>=1.16
 
 # Notebook kernel
 ipykernel>=7.1.0

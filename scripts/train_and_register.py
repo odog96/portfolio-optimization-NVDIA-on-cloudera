@@ -1,8 +1,8 @@
 """Train forecasting models, log to MLflow, register in CML model registry.
 
 Follows the cmlapi pattern from CAI-baseline-workshop/module1/04_deploy.py:
-  1. Train models + export ONNX
-  2. Log ONNX to MLflow experiment run (with signature)
+  1. Train models
+  2. Log native LightGBM model to MLflow experiment run (with signature)
   3. Register in CML via cmlapi.CreateRegisteredModelRequest
 """
 import json
@@ -59,9 +59,6 @@ print(f"  Samples:    {metrics['n_samples']}")
 
 lgb_path = returns_forecaster.save(f"{model_dir}/returns_forecaster.lgb")
 print(f"  Saved native: {lgb_path}")
-
-onnx_path = returns_forecaster.export_onnx(f"{model_dir}/returns_forecaster.onnx")
-print(f"  Exported ONNX: {onnx_path}")
 
 # ---------------------------------------------------------------------------
 # Step 2: Train GARCH

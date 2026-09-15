@@ -120,10 +120,10 @@ class CovarianceForecaster:
         return covariance
 
     def export_params(self, path: str) -> str:
-        """Export GARCH parameters and correlation matrix for ONNX deployment.
+        """Export GARCH parameters and correlation matrix for deployment.
 
-        Since GARCH is recursive and not natively ONNX-compatible, we export
-        the fitted parameters as JSON. The CAII endpoint uses these to
+        Since GARCH is recursive, we export the fitted parameters as JSON
+        rather than a serialized model. The CAII endpoint uses these to
         reconstruct and forecast.
         """
         import json
@@ -160,9 +160,9 @@ class CovarianceForecaster:
     ) -> str:
         """Register GARCH parameters in MLflow model registry.
 
-        GARCH is recursive and cannot be natively exported to ONNX, so we
-        log the fitted parameters as a pyfunc model artifact. This bridges
-        to CAII for covariance predictions via a custom wrapper.
+        GARCH is recursive and has no native serialized-model format, so we
+        log the fitted parameters as a JSON artifact. This bridges to CAII
+        for covariance predictions via a custom wrapper.
 
         Parameters
         ----------

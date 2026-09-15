@@ -147,46 +147,12 @@ class ReturnsForecaster:
             {"feature": self.feature_names, "importance": importance}
         ).sort_values("importance", ascending=False)
 
-    def export_onnx(self, path: str) -> str:
-        """Export trained model to ONNX format.
-
-        Parameters
-        ----------
-        path : str
-            Output file path (e.g., "models/returns_forecaster.onnx").
-
-        Returns
-        -------
-        str
-            Path to saved ONNX file.
-        """
-        if self.model is None:
-            raise RuntimeError("Model not trained.")
-
-        import onnxmltools
-        from onnxmltools.convert.lightgbm.operator_converters.LightGbm import (
-            convert_lightgbm,  # noqa: F401
-        )
-        from skl2onnx.common.data_types import FloatTensorType
-
-        n_features = len(self.feature_names)
-        initial_type = [("input", FloatTensorType([None, n_features]))]
-
-        onnx_model = onnxmltools.convert_lightgbm(
-            self.model, initial_types=initial_type, target_opset=15
-        )
-
-        output_path = Path(path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        onnxmltools.utils.save_model(onnx_model, str(output_path))
-        return str(output_path)
-
     def register_mlflow(
         self,
         model_name: str = "PortfolioReturnsForecaster",
         sample_input: Optional[pd.DataFrame] = None,
     ) -> str:
-        """Export to ONNX and register in MLflow model registry.
+        """Log the native LightGBM model and register it in MLflow.
 
         This is the minimal MLflow integration needed for CAII deployment.
         No experiment tracking — just registers the model so CAII can find it.
@@ -207,18 +173,7 @@ class ReturnsForecaster:
             raise RuntimeError("Model not trained.")
 
         import mlflow
-        import mlflow.onnx
-        import onnxmltools
-        from onnxmltools.convert.lightgbm.operator_converters.LightGbm import (
-            convert_lightgbm,  # noqa: F401
-        )
-        from skl2onnx.common.data_types import FloatTensorType
-
-        n_features = len(self.feature_names)
-        initial_type = [("input", FloatTensorType([None, n_features]))]
-        onnx_model = onnxmltools.convert_lightgbm(
-            self.model, initial_types=initial_type, target_opset=15
-        )
+        import mlflow.lightgbm
 
         signature = None
         if sample_input is not None:
@@ -228,13 +183,13 @@ class ReturnsForecaster:
             signature = infer_signature(sample_input, preds)
 
         with mlflow.start_run(run_name="register_returns_forecaster"):
-            result = mlflow.onnx.log_model(
-                onnx_model=onnx_model,
+            result = mlflow.lightgbm.log_model(
+                self.model,
                 artifact_path="model",
                 registered_model_name=model_name,
                 signature=signature,
             )
-            mlflow.set_tag("model_type", "lightgbm_onnx")
+            mlflow.set_tag("model_type", "lightgbm_native")
             mlflow.set_tag("purpose", "returns_forecasting")
             mlflow.set_tag("forecast_horizon", str(self.config.forecast_horizon))
 
