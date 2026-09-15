@@ -1,5 +1,10 @@
 import subprocess
 import sys
+from pathlib import Path
+
+# Project root, derived from this script's location rather than hardcoded —
+# the project directory name/path can differ across workspaces.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 def run(cmd):
@@ -15,10 +20,10 @@ print(f"Python: {sys.version}")
 run("pip install --upgrade 'numpy>=2.0.0' 'pandas>=2.0'")
 
 # Install all dependencies from requirements.txt
-run("pip install -r /home/cdsw/portfolio-optimization/requirements.txt")
+run(f"pip install -r {PROJECT_ROOT / 'requirements.txt'}")
 
 # Install the portfolio-optimization package in editable mode
-run("pip install -e /home/cdsw/portfolio-optimization")
+run(f"pip install -e {PROJECT_ROOT}")
 
 # Notebook kernel
 run(

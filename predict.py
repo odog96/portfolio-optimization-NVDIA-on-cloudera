@@ -7,13 +7,16 @@ file and serves per-ticker return predictions from recent price history,
 mirroring `ReturnsForecaster.predict()`.
 """
 import os
+from pathlib import Path
 
 import pandas as pd
 
 from portfolio_optimization.forecasting.lightgbm_model import ReturnsForecaster
 
+PROJECT_ROOT = Path(__file__).resolve().parent
+
 MODEL_PATH = os.environ.get(
-    "RETURNS_MODEL_PATH", "/home/cdsw/portfolio-optimization/models/returns_forecaster.lgb"
+    "RETURNS_MODEL_PATH", str(PROJECT_ROOT / "models" / "returns_forecaster.lgb")
 )
 
 _forecaster = ReturnsForecaster()
@@ -64,7 +67,7 @@ if __name__ == "__main__":
     from portfolio_optimization.utils import get_input_data
 
     dataset = os.environ.get("PORTFOLIO_OPT_DATASET", "dow30")
-    data_path = f"/home/cdsw/portfolio-optimization/data/stock_data/{dataset}.csv"
+    data_path = str(PROJECT_ROOT / "data" / "stock_data" / f"{dataset}.csv")
     sample_prices = get_input_data(data_path).tail(300)
 
     sample_args = {

@@ -8,8 +8,10 @@ Follows the cmlapi pattern from CAI-baseline-workshop/module1/04_deploy.py:
 import json
 import os
 import sys
+from pathlib import Path
 
-sys.path.insert(0, "/home/cdsw/portfolio-optimization")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
 import mlflow
 import numpy as np
@@ -28,8 +30,8 @@ from portfolio_optimization.utils import get_input_data
 # Config
 # ---------------------------------------------------------------------------
 dataset = os.environ.get("PORTFOLIO_OPT_DATASET", "dow30")
-data_path = f"/home/cdsw/portfolio-optimization/data/stock_data/{dataset}.csv"
-model_dir = "/home/cdsw/portfolio-optimization/models"
+data_path = str(PROJECT_ROOT / "data" / "stock_data" / f"{dataset}.csv")
+model_dir = str(PROJECT_ROOT / "models")
 os.makedirs(model_dir, exist_ok=True)
 os.makedirs("outputs", exist_ok=True)
 

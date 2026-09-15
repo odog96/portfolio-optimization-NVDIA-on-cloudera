@@ -12,10 +12,13 @@ Model), we fall back to a no-op decorator so this file still runs and can
 be exercised end-to-end before ever spending a real build/deploy cycle.
 """
 import os
+from pathlib import Path
 
 import pandas as pd
 
 from portfolio_optimization.forecasting.lightgbm_model import ReturnsForecaster
+
+PROJECT_ROOT = Path(__file__).resolve().parent
 
 try:
     import cdsw
@@ -41,7 +44,7 @@ except ImportError:
 
 MODEL_PATH = os.environ.get(
     "RETURNS_MODEL_PATH",
-    "/home/cdsw/portfolio-optimization/models/returns_forecaster.lgb",
+    str(PROJECT_ROOT / "models" / "returns_forecaster.lgb"),
 )
 
 _forecaster = ReturnsForecaster()
@@ -107,7 +110,7 @@ if __name__ == "__main__":
     print(f"cdsw available: {_HAVE_CDSW}")
 
     dataset = os.environ.get("PORTFOLIO_OPT_DATASET", "dow30")
-    data_path = f"/home/cdsw/portfolio-optimization/data/stock_data/{dataset}.csv"
+    data_path = str(PROJECT_ROOT / "data" / "stock_data" / f"{dataset}.csv")
     sample_prices = get_input_data(data_path).tail(300)
 
     print("\n--- Test 1: empty/placeholder payload (build self-test) ---")

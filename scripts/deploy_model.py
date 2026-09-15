@@ -10,8 +10,10 @@ import json
 import os
 import sys
 import time
+from pathlib import Path
 
-sys.path.insert(0, "/home/cdsw/portfolio-optimization")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
 MODEL_NAME = os.environ.get("CAII_MODEL_NAME", "PortfolioReturnsForecaster")
 
