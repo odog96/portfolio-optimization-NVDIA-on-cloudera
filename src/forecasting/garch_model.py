@@ -92,23 +92,8 @@ class CovarianceForecaster:
         if not self.garch_models:
             raise RuntimeError("Models not trained. Call train() first.")
 
-        horizon = horizon or self.config.forecast_horizon
         tickers = prices.columns.tolist()
-        n = len(tickers)
-
-        # Forecast variance per asset
-        forecasted_vol = np.zeros(n)
-        returns = np.log(prices / prices.shift(1)).dropna() * 100
-
-        for i, ticker in enumerate(tickers):
-            if ticker in self.garch_models:
-                res = self.garch_models[ticker]
-                forecast = res.forecast(horizon=horizon, reindex=False)
-                # Average variance over the horizon, convert back from pct scale
-                avg_var = forecast.variance.values[-1, :horizon].mean()
-                forecasted_vol[i] = np.sqrt(avg_var) / 100
-            else:
-                forecasted_vol[i] = returns[ticker].std() / 100
+        forecasted_vol = self.predict_volatility(prices, horizon)
 
         # Build covariance: D * R * D where D = diag(vol), R = correlation
         corr = self._get_correlation(tickers)
@@ -119,11 +104,64 @@ class CovarianceForecaster:
         covariance = _nearest_psd(covariance)
         return covariance
 
-    def export_params(self, path: str) -> str:
-        """Export GARCH parameters and correlation matrix for ONNX deployment.
+    def predict_volatility(
+        self, prices: pd.DataFrame, horizon: int | None = None
+    ) -> np.ndarray:
+        """Forecast each asset's volatility (standard deviation of log returns).
 
-        Since GARCH is recursive and not natively ONNX-compatible, we export
-        the fitted parameters as JSON. The CAII endpoint uses these to
+        Parameters
+        ----------
+        prices : pd.DataFrame
+            Recent price history; its columns set the asset order.
+        horizon : int, optional
+            Forecast horizon in trading days. Defaults to config.forecast_horizon.
+
+        Returns
+        -------
+        np.ndarray
+            Per-period volatility as a decimal (0.02 = 2%), shape (n_assets,),
+            averaged over the horizon. Assets without a fitted GARCH model
+            fall back to their sample volatility.
+        """
+        if not self.garch_models:
+            raise RuntimeError("Models not trained. Call train() first.")
+
+        horizon = horizon or self.config.forecast_horizon
+        tickers = prices.columns.tolist()
+        forecasted_vol = np.zeros(len(tickers))
+        returns = np.log(prices / prices.shift(1)).dropna() * 100
+
+        from arch import arch_model
+
+        garch_cfg = self.config.garch
+        for i, ticker in enumerate(tickers):
+            if ticker in self.garch_models:
+                # Condition on the returns passed in, keeping the fitted
+                # parameters: re-filtering is cheap and needs no refit, and
+                # forecasting from the fitted result alone would ignore
+                # `prices` and forecast from the end of the training window.
+                res = arch_model(
+                    returns[ticker].dropna(),
+                    vol=garch_cfg.vol_model,
+                    p=garch_cfg.p,
+                    q=garch_cfg.q,
+                    mean=garch_cfg.mean_model,
+                    dist=garch_cfg.dist,
+                ).fix(self.garch_models[ticker].params)
+                forecast = res.forecast(horizon=horizon, reindex=False)
+                # Average variance over the horizon, convert back from pct scale
+                avg_var = forecast.variance.values[-1, :horizon].mean()
+                forecasted_vol[i] = np.sqrt(avg_var) / 100
+            else:
+                forecasted_vol[i] = returns[ticker].std() / 100
+
+        return forecasted_vol
+
+    def export_params(self, path: str) -> str:
+        """Export GARCH parameters and correlation matrix for deployment.
+
+        Since GARCH is recursive, we export the fitted parameters as JSON
+        rather than a serialized model. The CAII endpoint uses these to
         reconstruct and forecast.
         """
         import json
@@ -160,9 +198,9 @@ class CovarianceForecaster:
     ) -> str:
         """Register GARCH parameters in MLflow model registry.
 
-        GARCH is recursive and cannot be natively exported to ONNX, so we
-        log the fitted parameters as a pyfunc model artifact. This bridges
-        to CAII for covariance predictions via a custom wrapper.
+        GARCH is recursive and has no native serialized-model format, so we
+        log the fitted parameters as a JSON artifact. This bridges to CAII
+        for covariance predictions via a custom wrapper.
 
         Parameters
         ----------

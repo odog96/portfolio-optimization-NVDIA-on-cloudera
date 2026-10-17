@@ -107,7 +107,7 @@ General-purpose utilities for data processing and portfolio calculations.
 
 ## Installation
 
-For installation instructions and prerequisites, please refer to the [main README](../README.md).
+For installation instructions and prerequisites, please refer to [NVIDIA's original README](../docs/NVIDIA_README.md).
 
 ## Quick Start
 

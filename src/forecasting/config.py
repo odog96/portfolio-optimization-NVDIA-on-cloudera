@@ -59,9 +59,14 @@ class ForecastingConfig(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
 
     forecast_horizon: int = Field(
-        default=5,
+        default=1,
         gt=0,
-        description="Number of trading days to forecast ahead (5=weekly)",
+        description=(
+            "Number of trading days to forecast ahead. Default 1 (daily) so the "
+            "forecast mean is on the same scale as the daily covariance and the "
+            "daily-returns CVaR scenarios; a longer horizon here needs matching "
+            "rescaling of both, or the optimizer trades off inconsistent units."
+        ),
     )
     training_window: int = Field(
         default=756,

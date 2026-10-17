@@ -58,10 +58,29 @@ class ReturnsForecaster:
 
         self.feature_names = X_flat.columns.tolist()
 
-        # Time-based split for evaluation
-        split_idx = int(len(X_flat) * (1 - eval_fraction))
-        X_train, X_eval = X_flat.iloc[:split_idx], X_flat.iloc[split_idx:]
-        y_train, y_eval = y_flat.iloc[:split_idx], y_flat.iloc[split_idx:]
+        # Chronological split. X_flat is ticker-major (flatten_features_for_training
+        # concatenates one block per ticker), so a positional iloc split would
+        # divide by TICKER, not by date — training on ~25 tickers and evaluating
+        # on ~5 over the same dates. Split on the date index instead, so every
+        # ticker appears in both sets and the eval period is strictly later.
+        horizon = self.config.forecast_horizon
+        unique_dates = X_flat.index.unique().sort_values()
+        cutoff_idx = int(len(unique_dates) * (1 - eval_fraction))
+        if cutoff_idx <= horizon or cutoff_idx >= len(unique_dates):
+            raise ValueError(
+                f"Not enough dates ({len(unique_dates)}) to build a chronological "
+                f"split with eval_fraction={eval_fraction} and horizon={horizon}."
+            )
+
+        # Embargo the last `horizon` training dates: their target is a forward
+        # return reaching into the eval window, which would leak future data.
+        train_end = unique_dates[cutoff_idx - horizon]
+        eval_start = unique_dates[cutoff_idx]
+
+        train_mask = X_flat.index < train_end
+        eval_mask = X_flat.index >= eval_start
+        X_train, X_eval = X_flat[train_mask], X_flat[eval_mask]
+        y_train, y_eval = y_flat[train_mask], y_flat[eval_mask]
 
         lgb_cfg = self.config.lightgbm
         train_set = lgb.Dataset(X_train, label=y_train)
@@ -97,11 +116,44 @@ class ReturnsForecaster:
         train_preds = self.model.predict(X_train)
         eval_preds = self.model.predict(X_eval)
 
+        eval_rmse = float(np.sqrt(np.mean((y_eval - eval_preds) ** 2)))
+
+        # Baseline: predict the training-set mean for every row. A model that
+        # cannot beat this has learned nothing useful about the cross-section.
+        baseline_pred = float(np.mean(y_train))
+        baseline_rmse = float(np.sqrt(np.mean((y_eval - baseline_pred) ** 2)))
+
+        # Fraction of out-of-sample rows where the predicted sign is correct.
+        # 0.5 is a coin flip. Rows with a zero actual return are excluded.
+        nonzero = np.asarray(y_eval) != 0
+        directional_accuracy = (
+            float(np.mean(np.sign(eval_preds[nonzero]) == np.sign(np.asarray(y_eval)[nonzero])))
+            if nonzero.any()
+            else float("nan")
+        )
+
         return {
             "train_rmse": float(np.sqrt(np.mean((y_train - train_preds) ** 2))),
-            "eval_rmse": float(np.sqrt(np.mean((y_eval - eval_preds) ** 2))),
+            "eval_rmse": eval_rmse,
+            # Out-of-sample error of the predict-the-mean baseline. skill_vs_baseline
+            # > 0 means the model beat it; <= 0 means it did not.
+            "baseline_rmse": baseline_rmse,
+            "skill_vs_baseline": float(1 - eval_rmse / baseline_rmse),
+            "directional_accuracy": directional_accuracy,
+            # Spread of the predictions themselves. Near zero means the model
+            # returns nearly the same value for every asset, leaving the
+            # optimizer no basis to prefer one over another.
+            "pred_std": float(np.std(eval_preds)),
+            "actual_std": float(np.std(y_eval)),
             "n_features": len(self.feature_names),
             "n_samples": len(X_flat),
+            "n_train_rows": int(len(X_train)),
+            "n_eval_rows": int(len(X_eval)),
+            # get_input_data() leaves a CSV index as ISO date strings, while a
+            # yfinance pull yields Timestamps — both sort chronologically, so
+            # format defensively rather than assuming either type.
+            "train_end": _format_date(train_end),
+            "eval_start": _format_date(eval_start),
             "best_iteration": self.model.best_iteration,
         }
 
@@ -147,46 +199,12 @@ class ReturnsForecaster:
             {"feature": self.feature_names, "importance": importance}
         ).sort_values("importance", ascending=False)
 
-    def export_onnx(self, path: str) -> str:
-        """Export trained model to ONNX format.
-
-        Parameters
-        ----------
-        path : str
-            Output file path (e.g., "models/returns_forecaster.onnx").
-
-        Returns
-        -------
-        str
-            Path to saved ONNX file.
-        """
-        if self.model is None:
-            raise RuntimeError("Model not trained.")
-
-        import onnxmltools
-        from onnxmltools.convert.lightgbm.operator_converters.LightGbm import (
-            convert_lightgbm,  # noqa: F401
-        )
-        from skl2onnx.common.data_types import FloatTensorType
-
-        n_features = len(self.feature_names)
-        initial_type = [("input", FloatTensorType([None, n_features]))]
-
-        onnx_model = onnxmltools.convert_lightgbm(
-            self.model, initial_types=initial_type, target_opset=15
-        )
-
-        output_path = Path(path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        onnxmltools.utils.save_model(onnx_model, str(output_path))
-        return str(output_path)
-
     def register_mlflow(
         self,
         model_name: str = "PortfolioReturnsForecaster",
         sample_input: Optional[pd.DataFrame] = None,
     ) -> str:
-        """Export to ONNX and register in MLflow model registry.
+        """Log the native LightGBM model and register it in MLflow.
 
         This is the minimal MLflow integration needed for CAII deployment.
         No experiment tracking — just registers the model so CAII can find it.
@@ -207,18 +225,7 @@ class ReturnsForecaster:
             raise RuntimeError("Model not trained.")
 
         import mlflow
-        import mlflow.onnx
-        import onnxmltools
-        from onnxmltools.convert.lightgbm.operator_converters.LightGbm import (
-            convert_lightgbm,  # noqa: F401
-        )
-        from skl2onnx.common.data_types import FloatTensorType
-
-        n_features = len(self.feature_names)
-        initial_type = [("input", FloatTensorType([None, n_features]))]
-        onnx_model = onnxmltools.convert_lightgbm(
-            self.model, initial_types=initial_type, target_opset=15
-        )
+        import mlflow.lightgbm
 
         signature = None
         if sample_input is not None:
@@ -228,13 +235,13 @@ class ReturnsForecaster:
             signature = infer_signature(sample_input, preds)
 
         with mlflow.start_run(run_name="register_returns_forecaster"):
-            result = mlflow.onnx.log_model(
-                onnx_model=onnx_model,
+            result = mlflow.lightgbm.log_model(
+                self.model,
                 artifact_path="model",
                 registered_model_name=model_name,
                 signature=signature,
             )
-            mlflow.set_tag("model_type", "lightgbm_onnx")
+            mlflow.set_tag("model_type", "lightgbm_native")
             mlflow.set_tag("purpose", "returns_forecasting")
             mlflow.set_tag("forecast_horizon", str(self.config.forecast_horizon))
 
@@ -255,3 +262,8 @@ class ReturnsForecaster:
         import lightgbm as lgb
 
         self.model = lgb.Booster(model_file=path)
+
+
+def _format_date(value) -> str:
+    """Render an index label as YYYY-MM-DD, whether Timestamp or str."""
+    return value.strftime("%Y-%m-%d") if hasattr(value, "strftime") else str(value)

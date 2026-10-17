@@ -1041,9 +1041,13 @@ DATASET_TICKERS = {
 
 
 def _download_tickers(
-    tickers, output_path, start_date="2005-01-01", end_date="2025-01-01", batch_size=50
+    tickers, output_path, start_date="2005-01-01", end_date=None, batch_size=50
 ):
-    """Download closing prices for a list of tickers and save to CSV."""
+    """Download closing prices for a list of tickers and save to CSV.
+
+    ``end_date=None`` (the default) downloads through the latest available
+    trading day. Pass an explicit ``end_date`` to pin a reproducible range.
+    """
     frames = []
     for i in range(0, len(tickers), batch_size):
         batch = tickers[i : i + batch_size]
@@ -1062,7 +1066,9 @@ def _download_tickers(
     return data
 
 
-def download_data(dataset_dir, batch_size=50, datasets=None):
+def download_data(
+    dataset_dir, batch_size=50, datasets=None, start_date="2005-01-01", end_date=None
+):
     """Download stock data for one or more datasets.
 
     Parameters
@@ -1076,9 +1082,20 @@ def download_data(dataset_dir, batch_size=50, datasets=None):
     datasets : list of str, optional
         Which datasets to download. Options: "sp500", "sp100", "dow30",
         "global_titans". If None, downloads all.
+    start_date : str, optional
+        First date to download, "YYYY-MM-DD". Defaults to "2005-01-01".
+    end_date : str, optional
+        Last date to download, "YYYY-MM-DD". Defaults to None, which
+        downloads through the latest available trading day.
     """
     if dataset_dir.endswith(".csv"):
-        _download_tickers(SP500_TICKERS, dataset_dir, batch_size=batch_size)
+        _download_tickers(
+            SP500_TICKERS,
+            dataset_dir,
+            start_date=start_date,
+            end_date=end_date,
+            batch_size=batch_size,
+        )
         return
 
     target_dir = (
@@ -1098,7 +1115,13 @@ def download_data(dataset_dir, batch_size=50, datasets=None):
             continue
         output_path = os.path.join(target_dir, f"{name}.csv")
         print(f"Downloading {name} ({len(tickers)} tickers)...")
-        _download_tickers(tickers, output_path, batch_size=batch_size)
+        _download_tickers(
+            tickers,
+            output_path,
+            start_date=start_date,
+            end_date=end_date,
+            batch_size=batch_size,
+        )
 
 
 def create_synthetic_stock_dataset(

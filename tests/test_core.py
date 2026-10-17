@@ -780,3 +780,60 @@ class TestCompareResultsLabels:
         compare_results(self._row("CUOPT"), self._row("CLARABEL", t=5.6))
         out = capsys.readouterr().out
         assert "cuOpt (GPU) vs CLARABEL (CPU)" in out
+
+
+@pytest.mark.parametrize("settings_as_dict", [False, True])
+def test_whitened_kde_keeps_correlation_and_inflates_vol_uniformly(settings_as_dict):
+    """KDESettings(whiten=True): assets with very different volatilities (0.5%
+    to 4% daily) and strong correlation keep their correlation, and every
+    asset's volatility is inflated by the same sqrt(1 + bandwidth**2)."""
+    rng = np.random.default_rng(1)
+    corr = np.array([[1.0, 0.7, 0.3], [0.7, 1.0, 0.5], [0.3, 0.5, 1.0]])
+    vols = np.array([0.005, 0.02, 0.04])
+    hist = (rng.standard_normal((1500, 3)) @ np.linalg.cholesky(corr).T) * vols
+    returns_dict = {"returns": pd.DataFrame(hist), "mean": hist.mean(axis=0)}
+    bandwidth = 0.5
+    kde_settings = KDESettings(
+        bandwidth=bandwidth, kernel="gaussian", device="CPU", whiten=True
+    )
+    settings = ScenarioGenerationSettings(
+        num_scen=20000,
+        fit_type="kde",
+        kde_settings=kde_settings.model_dump() if settings_as_dict else kde_settings,
+        seed=0,
+    )
+
+    R = generate_cvar_data(returns_dict, settings)["cvar_data"].R
+
+    assert R.shape == (3, 20000)
+    np.testing.assert_allclose(np.corrcoef(R), np.corrcoef(hist.T), atol=0.02)
+    np.testing.assert_allclose(
+        R.std(axis=1) / hist.std(axis=0), np.sqrt(1 + bandwidth**2), rtol=0.03
+    )
+
+
+def test_whitened_kde_handles_fewer_dates_than_assets():
+    """With fewer dates than assets the covariance is singular; whitening must
+    still work and keep the historical correlation structure."""
+    rng = np.random.default_rng(2)
+    n_dates, n_assets = 60, 100
+    factors = rng.standard_normal((n_dates, 3))
+    hist = factors @ rng.standard_normal((3, n_assets)) * 0.01 + 0.005 * rng.standard_normal(
+        (n_dates, n_assets)
+    )
+    returns_dict = {"returns": pd.DataFrame(hist), "mean": hist.mean(axis=0)}
+    settings = ScenarioGenerationSettings(
+        num_scen=20000,
+        fit_type="kde",
+        kde_settings=KDESettings(bandwidth=0.3, device="CPU", whiten=True),
+        seed=0,
+    )
+
+    R = generate_cvar_data(returns_dict, settings)["cvar_data"].R
+
+    assert R.shape == (n_assets, 20000)
+    assert np.all(np.isfinite(R))
+    upper = np.triu_indices(n_assets, 1)
+    np.testing.assert_allclose(
+        np.corrcoef(R)[upper], np.corrcoef(hist.T)[upper], atol=0.03
+    )

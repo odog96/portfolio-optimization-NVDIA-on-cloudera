@@ -3,6 +3,144 @@
 All notable changes to this project are documented here, one PR per entry,
 newest first, dated by merge to `main`. Backfilled from git history.
 
+## 2026-10-17 — branch `cai-forecasting`
+
+Scenario fidelity fix for the package KDE, and forecasts wired into both
+terms of the Mean-CVaR objective. Rationale and measurements:
+`docs/forecasting_design_decisions.md`.
+
+**Core package (candidates to propose upstream to NVIDIA)**
+
+- Added `KDESettings.whiten` (default `False`, so existing behaviour is
+  unchanged). When `True`, `generate_cvar_data` fits the KDE on whitened
+  (decorrelated, unit-variance) returns via the new
+  `cvar_utils.generate_samples_whitened_kde` and maps the samples back, and
+  `bandwidth` is in standard deviations. Works when there are fewer dates than
+  assets.
+- Why: the standard KDE adds independent noise of size `bandwidth` to each
+  asset. At the default 0.01 on daily returns (30 Dow stocks, 3 years) the
+  scenarios are ~17% more volatile than history and the average pairwise
+  correlation falls from 0.187 to 0.137, understating how much stocks fall
+  together. Whitened KDE at 0.3: volatility 1.04× (uniform across assets),
+  correlation 0.187.
+- Notebooks (`cvar_basic`, `efficient_frontier`, `rebalancing_strategies`,
+  `launchable`) now use `KDESettings(bandwidth=0.3, ..., whiten=True)`, with
+  the original setting in a comment and a markdown note in the scenario
+  generation sections.
+- Streamlit app: sidebar "Scenario Generator" (Whitened KDE / Standard KDE)
+  and "KDE Bandwidth" controls; defaults Whitened KDE, 0.3.
+- Tests: `tests/test_core.py` — whitened KDE keeps correlation and inflates
+  volatility uniformly (settings as model and as dict); works with fewer
+  dates than assets.
+- Not changed: the backtester's own KDE simulation
+  (`portfolio_backtester._generate_samples_kde`, bandwidth 0.005, standard
+  KDE).
+
+**Forecasting layer (this fork)**
+
+- `scripts/run_forecast_optimization.py`:
+  - `--lambda-scaling {historical,forecast,off}` (default `historical`). The
+    package rescales λ by max over stocks of (mean return / CVaR), computed
+    from whatever returns it is given; computed from forecasts this cancels
+    the forecasts' overall level (halving every forecast return left the
+    weights unchanged). `historical` computes the ratio from historical data
+    and holds it fixed. The λ actually used is printed.
+  - `--scenario-adjustment {forecast,none}` (default `forecast`): rescale each
+    stock's scenarios to the LightGBM forecast return and GARCH forecast
+    volatility, so the CVaR term uses the forecasts. Previously the GARCH
+    forecast was computed but never reached the optimizer.
+  - `--scenario-generator {whitened-kde,kde}` and `--kde-bandwidth` (defaults
+    whitened KDE, 0.3; standard KDE default lowered to 0.0025).
+  - Prints scenario fidelity (volatility and correlation versus history).
+- `forecasting/scenario_adjustment.py`: new `rescale_scenarios`.
+- `forecasting/garch_model.py`: new `CovarianceForecaster.predict_volatility`
+  (per-stock volatility vector; `predict` now builds on it, output unchanged).
+- Tests: new `tests/test_forecasting.py` for `rescale_scenarios`.
+- Docs: new `docs/forecasting_design_decisions.md`; `CLAUDE.md` updated.
+
+**Cloudera Blueprint format**
+
+- New top-level `README.md` in the Cloudera Blueprint template format
+  (https://github.com/kevinbtalbert/Cloudera-Blueprints-Standard) and new
+  `METADATA.yaml` catalog file. Fields still to fill in are marked TODO
+  (Reprise demo link, final public GitHub link, published date, target
+  vertical confirmation).
+- NVIDIA's original README moved unchanged to `docs/NVIDIA_README.md`
+  (relative links adjusted); links to it from `src/readme.md`,
+  `notebooks/readme.md` and `CLAUDE.md` updated.
+- New `assets/cloudera_architecture.svg` (and PNG export): architecture of
+  the blueprint on Cloudera AI.
+
+**Cleanup**
+
+- Streamlit demo: the GPU solver (cuOpt) is pinned to the PDLP method, as
+  everywhere else in the repo. Its default (concurrent) method segfaulted
+  intermittently during re-optimization and took the whole app down. The
+  GPU side now runs in its own process like the CPU side, and a solver
+  process that dies is reported as an error instead of hanging the page.
+- Deployment scripts (`scripts/install_dependencies.py`, `download_data.py`,
+  `train_and_register.py`, `deploy_model.py`, `launch_streamlit.py`) no longer
+  fail with `NameError: __file__` when Cloudera AI runs them in its
+  cell-by-cell kernel; they fall back to the working directory (the project
+  root).
+- `scripts/launch_streamlit.py` starts Streamlit headless (it otherwise waits
+  for a first-run email prompt and the Application never leaves Starting),
+  via the current Python interpreter, from the project root.
+  It also reinstalls pydantic so its dependencies exist in the
+  Application's runtime (all Python 3.12 runtimes share `~/.local`).
+- Removed temporary deployment experiments: `hello.py` (model-build smoke
+  test), `serve.py` and `predict.py` (hand-written serving entry points, not
+  used: `scripts/deploy_model.py` serves the registered MLflow model) and
+  `cml_build.sh` (their build step).
+- `INVESTIGATION_NOTES.md` removed from the repository (kept locally, gitignored);
+  known limitations moved to `docs/forecasting_design_decisions.md` section 4.
+- `.gitignore`: workspace home-directory files (the project root is the
+  Cloudera AI user's home directory) and the personal `busy_timer.ipynb`.
+
+**Forecast mode in the rebalancing app**
+
+- `rebalance_portfolio` takes an optional `estimate_provider` hook, called
+  before each optimization with the scenario data, CVaR parameters, prices
+  up to the rebalance date only, and that date. Default None: NVIDIA's
+  behaviour is unchanged (candidate for upstream).
+- `forecasting/estimate_provider.py`: `ForecastEstimateProvider` trains
+  LightGBM and GARCH before the backtest start and every 3 months, each on
+  earlier data only, and applies the forecasts at each rebalance (forecast
+  mean, rescaled scenarios, risk aversion scaled from historical data).
+- Streamlit app: "Use forecasts" toggle, off by default. Models are trained
+  once before the GPU-vs-CPU race and shared by both sides; forecast time is
+  reported separately. Warning on datasets over 50 stocks (cost grows faster
+  than the number of stocks).
+- Fix: `CovarianceForecaster.predict_volatility` now conditions on the prices
+  passed in; it used to forecast from the end of the training window
+  regardless of its input.
+- Design: `docs/forecasting_design_decisions.md` section 5.
+
+**AMP install and demo operations**
+
+- Streamlit Application stops itself after 60 minutes without user
+  interaction (`IDLE_SHUTDOWN_MINUTES`, `0` disables), so an abandoned demo
+  no longer holds the workspace GPU. The app touches a heartbeat file on
+  every rerun; `scripts/launch_streamlit.py` watches it and stops the
+  Application. Verified in a running Application on 2026-10-15.
+- Results page notes that each side draws its own random scenarios, so the
+  GPU and CPU portfolios differ; the comparison is speed, not returns.
+- AMP step 2 (Install GPU Packages) no longer requests a GPU: the pip install
+  and import check run on CPU.
+- Validate GPU Pipeline is now a job the AMP creates but does not run; users
+  run it from the Jobs page before starting work. The application is the
+  only AMP step that requests a GPU. The check solves through CVXPY with
+  cuOpt's PDLP method pinned, the same path as the Streamlit app.
+- Step 1 (`scripts/install_dependencies.py`) no longer installs pandas 3 only
+  to replace it with pandas 2.3.
+- Model training and registration is now an optional job (Train and Register
+  Forecast Models) that the AMP creates but does not run, as the demo
+  application trains its own models.
+- Model deployment is now an optional job (Deploy Forecast Model) that the
+  AMP creates but does not run; the demo application does not use the
+  endpoint. As a job it waits up to 25 minutes for the model build and fails
+  clearly if the build does not finish.
+
 ## 2026-07-17 — PR #56
 
 Guard against None CVXPY variable values when the solver hits a resource

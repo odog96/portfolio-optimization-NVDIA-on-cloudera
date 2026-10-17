@@ -1,6 +1,7 @@
 import os
 import subprocess
 
+import cvxpy as cp
 import numpy as np
 import pandas as pd
 
@@ -50,8 +51,14 @@ rd = generate_cvar_data(
 opt = CVaR(
     returns_dict=rd,
     cvar_params=CvarParameters(w_min=0.0, w_max=0.5, confidence=0.95),
-    api_settings=ApiSettings(api="cuopt_python"),
+    api_settings=ApiSettings(api="cvxpy"),
 )
-result, portfolio = opt.solve_optimization_problem(print_results=True)
+# Solve the way the Streamlit app does: through CVXPY with cuOpt's PDLP method
+# pinned. cuOpt's default (concurrent) method segfaulted intermittently in the
+# app (2026-10-13).
+result, portfolio = opt.solve_optimization_problem(
+    solver_settings={"solver": cp.CUOPT, "solver_method": "PDLP", "verbose": False},
+    print_results=True,
+)
 
 print("\n=== GPU pipeline validated successfully ===")

@@ -35,6 +35,17 @@ class KDESettings(BaseModel):
     device : str
         Computation device. 'GPU' uses cuML for acceleration, 'CPU' uses
         scikit-learn. Default is 'GPU'.
+    whiten : bool
+        Fit the KDE on whitened returns (decorrelated, unit variance via the
+        eigen-decomposition of the sample covariance) and map the samples
+        back.
+        The kernel noise then follows the assets' own covariance, so the
+        historical correlation is preserved and every asset's volatility is
+        inflated by the same factor sqrt(1 + bandwidth**2). When True,
+        `bandwidth` is in standard deviations (e.g. 0.3), not return units.
+        When False (default), the kernel adds independent noise of size
+        `bandwidth` to each asset; on daily returns the default 0.01 inflates
+        volatility ~17% and pulls average correlation down ~25%.
 
     Examples
     --------
@@ -51,6 +62,11 @@ class KDESettings(BaseModel):
     ] = Field(default="gaussian", description="Kernel function type")
     device: Literal["GPU", "CPU"] = Field(
         default="GPU", description="Computation device"
+    )
+    whiten: bool = Field(
+        default=False,
+        description="Fit the KDE on whitened returns to preserve correlation; "
+        "bandwidth is then in standard deviations",
     )
 
     @field_validator("device", mode="before")

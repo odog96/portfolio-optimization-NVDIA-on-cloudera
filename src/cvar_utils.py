@@ -118,6 +118,59 @@ def generate_samples_kde(
     return new_samples_df.to_numpy()
 
 
+def generate_samples_whitened_kde(
+    num_scen: int,
+    returns_data,
+    kde_settings: KDESettings = None,
+    verbose: bool = False,
+    seed: int = None,
+):
+    """Sample from a KDE fitted on whitened returns, mapped back to returns.
+
+    The returns are transformed to uncorrelated, unit-variance components
+    using the eigen-decomposition of their sample covariance, the KDE is
+    fitted and sampled there (generate_samples_kde), and the samples are
+    mapped back with the same transform and the sample mean. The kernel
+    noise therefore has covariance bandwidth**2 * covariance: correlations
+    are preserved and every asset's volatility is inflated by the same factor
+    sqrt(1 + bandwidth**2). `kde_settings.bandwidth` is in standard
+    deviations.
+
+    When there are fewer dates than assets the covariance is singular; only
+    the directions the data spans (non-negligible eigenvalues) are whitened,
+    so the samples stay within the span of the history, as with the
+    standard KDE.
+
+    Parameters
+    ----------
+    num_scen : int
+        Number of samples to generate.
+    returns_data : array-like
+        Historical returns, shape (n_dates, n_assets).
+    kde_settings, verbose, seed
+        As in generate_samples_kde.
+
+    Returns
+    -------
+    np.ndarray
+        Samples, shape (num_scen, n_assets).
+    """
+    H = np.asarray(returns_data, dtype=float)
+    hist_mean = H.mean(axis=0)
+    eigvals, eigvecs = np.linalg.eigh(np.cov(H, rowvar=False))
+    keep = eigvals > eigvals.max() * 1e-10
+    # Columns of A map unit-variance components back to returns: cov = A A^T.
+    A = eigvecs[:, keep] * np.sqrt(eigvals[keep])
+
+    # Whiten: components of W are uncorrelated with unit variance.
+    W = (H - hist_mean) @ (eigvecs[:, keep] / np.sqrt(eigvals[keep]))
+    Z = generate_samples_kde(
+        num_scen, pd.DataFrame(W), kde_settings=kde_settings, verbose=verbose, seed=seed
+    )
+    # Map back to return space with the historical mean and covariance.
+    return hist_mean + np.asarray(Z) @ A.T
+
+
 def generate_cvar_data(
     returns_dict: dict,
     scenario_generation_settings: ScenarioGenerationSettings,
@@ -163,7 +216,13 @@ def generate_cvar_data(
         p = np.ones(num_scen) / num_scen  # probability of each scenario
 
     elif fit_type == "kde":  # kde distribution
-        R_log = generate_samples_kde(
+        whiten = kde_settings is not None and (
+            kde_settings.get("whiten", False)
+            if isinstance(kde_settings, dict)
+            else kde_settings.whiten
+        )
+        sampler = generate_samples_whitened_kde if whiten else generate_samples_kde
+        R_log = sampler(
             num_scen,
             returns_data,
             kde_settings=kde_settings,

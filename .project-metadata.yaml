@@ -39,7 +39,6 @@ tasks:
     kernel: python3
     cpu: 2
     memory: 16
-    gpu: 1
 
   - type: run_session
     name: Download Stock Data
@@ -49,38 +48,49 @@ tasks:
     cpu: 2
     memory: 4
 
-  - type: run_session
-    name: Train Forecasting Models
+  - type: create_job
+    name: Train and Register Forecast Models
+    entity_label: train_register
     script: scripts/train_and_register.py
-    short_summary: Train LightGBM + GARCH and register in MLflow
+    short_summary: Create an optional job that trains the forecast models and registers them in the AI Registry
     long_summary: >-
-      Trains a LightGBM model for expected returns and GARCH for
-      covariance forecasting. Logs to MLflow and registers in the
-      AI Registry for model serving deployment.
+      Creates, but does not run, a job that trains a LightGBM model for
+      expected returns and GARCH for volatility, logs them to MLflow and
+      registers them in the AI Registry. Run it before Deploy Forecast Model.
+      The demo application trains its own copies and does not need it.
     kernel: python3
     cpu: 2
     memory: 8
+    timeout: 60
 
-  - type: run_session
+  - type: create_job
     name: Validate GPU Pipeline
+    entity_label: validate_gpu
     script: scripts/validate_gpu.py
-    short_summary: Run end-to-end GPU optimization smoke test
+    short_summary: Create a job that checks the GPU pipeline (run it before starting work)
+    long_summary: >-
+      Creates, but does not run, a job that generates scenarios on the GPU
+      with cuML and solves a small portfolio with cuOpt. Run it from the
+      Jobs page before starting work, or after changing the runtime or GPU.
     kernel: python3
     cpu: 2
     memory: 8
     gpu: 1
 
-  - type: run_session
-    name: Deploy Model
+  - type: create_job
+    name: Deploy Forecast Model
+    entity_label: deploy_model
     script: scripts/deploy_model.py
-    short_summary: Deploy returns forecaster from model registry
+    short_summary: Create an optional job that deploys the returns forecaster as a model endpoint
     long_summary: >-
-      Deploys the registered LightGBM model from the AI Registry to a
-      CML model serving endpoint. Reads registration info written by
-      train_and_register.py.
+      Creates, but does not run, a job that deploys the registered LightGBM
+      model from the AI Registry to a Cloudera AI model endpoint. The demo
+      application does not need it; run it only to serve the forecast as an
+      endpoint. Reads registration info written by train_and_register.py.
     kernel: python3
     cpu: 2
     memory: 4
+    timeout: 30
 
   - type: start_application
     name: Portfolio Rebalancing Demo

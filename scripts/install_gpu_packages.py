@@ -21,10 +21,18 @@ run(
     "'cuopt-cu12==26.6.*'"
 )
 
-# Verify imports
-print("Verifying GPU package imports...")
-import cuml
-import cuopt
-
-print(f"cuML {cuml.__version__}, cuOpt {cuopt.__version__} — OK")
+# Verify imports in a FRESH interpreter. Importing here would fail with a
+# misleading "No module named 'numba.cuda.core'": this process started before
+# pip wrote those files, and Python's import finder caches directory listings,
+# so newly created namespace-package directories are invisible to it.
+print("Verifying GPU package imports (fresh interpreter)...")
+verify = (
+    "import cuml, cuopt; "
+    "print(f'cuML {cuml.__version__}, cuOpt {cuopt.__version__} - OK')"
+)
+result = subprocess.run([sys.executable, "-c", verify], capture_output=True, text=True)
+print(result.stdout.strip())
+if result.returncode != 0:
+    print(result.stderr.strip()[-2000:])
+    raise SystemExit("GPU package verification failed — see the traceback above.")
 print("=== GPU packages installed ===")

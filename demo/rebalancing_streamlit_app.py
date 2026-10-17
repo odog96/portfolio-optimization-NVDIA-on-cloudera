@@ -17,7 +17,9 @@ from __future__ import annotations
 import copy
 import io
 import multiprocessing as mp
+import os
 import queue
+import tempfile
 import sys
 import threading
 import time
@@ -99,6 +101,15 @@ st.set_page_config(
         ),
     },
 )
+
+# Every user interaction reruns this script. Touching the heartbeat file lets
+# scripts/launch_streamlit.py stop the Application after a period of no use.
+_heartbeat_file = os.environ.get("APP_HEARTBEAT_FILE")
+if _heartbeat_file:
+    try:
+        Path(_heartbeat_file).touch()
+    except OSError:
+        pass
 
 
 # Custom CSS for better appearance (matching efficient frontier app)
@@ -1365,6 +1376,7 @@ def _resolve_cpu_solver(solver_key: str):
     import cvxpy as _cp
 
     _map = {
+        "CUOPT": _cp.CUOPT,
         "HIGHS": _cp.HIGHS,
         "CLARABEL": _cp.CLARABEL,
         "ECOS": _cp.ECOS,
@@ -1387,6 +1399,7 @@ def create_rebalancing_cpu_worker(
     transaction_cost_factor: float,
     solver_name: str,
     mp_queue: "mp.Queue",
+    forecast_provider_path: str | None = None,
 ):
     """CPU rebalancing worker that runs in a separate subprocess.
 
@@ -1422,6 +1435,20 @@ def create_rebalancing_cpu_worker(
         )
         _cvar_params = CvarParameters(**cvar_params_dict)
         _solver_settings = {"solver": _resolve_cpu_solver(solver_key), "verbose": False}
+        if solver_key == "CUOPT":
+            # Pin PDLP, as the rest of the repo does. cuOpt's default
+            # (concurrent) method segfaulted intermittently on this problem
+            # (1 in 5 runs on an A10G, 2026-10-13); PDLP ran 5/5 clean.
+            _solver_settings["solver_method"] = "PDLP"
+
+        # Forecast mode: models trained once in the parent, shared by both sides.
+        _provider = None
+        if forecast_provider_path:
+            from portfolio_optimization.forecasting.estimate_provider import (
+                ForecastEstimateProvider,
+            )
+
+            _provider = ForecastEstimateProvider.load(forecast_provider_path)
 
         mp_queue.put(
             {
@@ -1448,6 +1475,7 @@ def create_rebalancing_cpu_worker(
             solver_settings=_solver_settings,
             re_optimize_criteria=re_optimize_criteria,
             print_opt_result=False,
+            estimate_provider=_provider,
         )
         r.cvar_params = _cvar_params
 
@@ -1489,6 +1517,7 @@ def create_rebalancing_cpu_worker(
         period_counter = 0
         total_solve_time = 0.0
         total_kde_time = 0.0
+        total_forecast_time = 0.0
         start_time_overall = time.time()
 
         while _pd.Timestamp(backtest_date) < backtest_final_date:
@@ -1624,12 +1653,23 @@ def create_rebalancing_cpu_worker(
                     }
                 )
 
+                opt_params, opt_api_settings = r.cvar_params, None
+                if _provider is not None:
+                    opt_returns, opt_params, opt_api_settings = _provider(
+                        returns_dict=opt_returns,
+                        cvar_params=r.cvar_params,
+                        prices=r.price_data.loc[:backtest_date],
+                        date=backtest_date,
+                    )
+                    total_forecast_time += _provider.last_forecast_time
+
                 existing_ptf = (
                     current_portfolio if r.cvar_params.T_tar is not None else None
                 )
                 opt_problem = cvar_optimizer.CVaR(
                     returns_dict=opt_returns,
-                    cvar_params=r.cvar_params,
+                    cvar_params=opt_params,
+                    api_settings=opt_api_settings,
                     existing_portfolio=existing_ptf,
                 )
                 solver_result, current_portfolio = (
@@ -1764,6 +1804,7 @@ def create_rebalancing_cpu_worker(
                 "portfolio_snapshots": portfolio_snapshots,
                 "total_solve_time": total_solve_time,
                 "total_kde_time": total_kde_time,
+                "total_forecast_time": total_forecast_time,
                 "total_elapsed_time": final_total_time,
                 "rebal_count": len(rebal_dates),
                 "message": f"{solver_name}: Completed {period_counter} periods in {final_total_time:.2f}s",
@@ -1894,7 +1935,7 @@ def _build_cpu_figure(
 
 
 def cpu_bridge_thread(
-    mp_q, st_progress_q, st_result_q, strategy_display_name, start_event
+    mp_q, st_progress_q, st_result_q, strategy_display_name, start_event, proc=None
 ):
     """Bridge thread: reads serializable data from mp.Queue, builds figures,
     and pushes Streamlit-compatible updates to threading.Queue."""
@@ -1908,6 +1949,13 @@ def cpu_bridge_thread(
         try:
             msg = mp_q.get(timeout=1.0)
         except Exception:
+            # The worker died without reporting (e.g. a native crash): report
+            # an error instead of leaving the UI waiting forever.
+            if proc is not None and not proc.is_alive() and mp_q.empty():
+                error = f"{solver_name} worker exited unexpectedly (exit code {proc.exitcode})"
+                st_progress_q.put({"solver": solver_name, "status": "error", "message": error})
+                st_result_q.put(_create_error_result(solver_name, error))
+                break
             continue
 
         status = msg.get("status")
@@ -2013,6 +2061,7 @@ def cpu_bridge_thread(
                     "fig": None,
                     "total_solve_time": msg.get("total_solve_time", 0),
                     "total_kde_time": msg.get("total_kde_time", 0),
+                    "total_forecast_time": msg.get("total_forecast_time", 0),
                     "total_elapsed_time": msg.get("total_elapsed_time", 0),
                     "rebal_count": msg.get("rebal_count", 0),
                     "error": None,
@@ -2056,11 +2105,11 @@ def run_progressive_rebalancing(
     cpu_solver_choice: str,
     blog_mode: bool = True,
     notional: int = 100_000_000,
+    forecast_provider_path: str | None = None,
 ):
     """Run GPU and CPU rebalancing in parallel with progressive updates."""
 
     # Build solver settings
-    gpu_settings = {"solver": cp.CUOPT, "verbose": SolverConfig.SOLVER_VERBOSE}
     cpu_solver_map = {
         "HIGHS": cp.HIGHS,
         "CLARABEL": cp.CLARABEL,
@@ -2103,26 +2152,44 @@ def run_progressive_rebalancing(
     gpu_cvar_params = copy.deepcopy(cvar_params)
     cpu_cvar_params = copy.deepcopy(cvar_params)
 
-    gpu_thread = threading.Thread(
-        target=create_rebalancing_progressive,
+    # The GPU side runs in its own subprocess, like the CPU side. cuOpt solves
+    # called from a worker thread of the Streamlit process segfault
+    # intermittently (reproduced outside Streamlit on an A10G, 2026-10-12);
+    # in a subprocess the solve runs on that process's main thread.
+    gpu_mp_q = mp.Queue()
+
+    gpu_process = mp.Process(
+        target=create_rebalancing_cpu_worker,
         args=(
             dataset_path,
             trading_range,
-            returns_compute_settings,
-            gpu_scenario_settings,
-            gpu_cvar_params,
-            gpu_settings,
+            returns_compute_settings.model_dump(),
+            gpu_scenario_settings.model_dump(),
+            gpu_cvar_params.model_dump(),
+            "CUOPT",
             look_back_window,
             look_forward_window,
             re_optimize_criteria,
             transaction_cost_factor,
             "GPU (cuOpt)",
-            strategy_display_name,
+            gpu_mp_q,
+            forecast_provider_path,
+        ),
+        name="GPU-Process",
+        daemon=True,
+    )
+
+    gpu_bridge = threading.Thread(
+        target=cpu_bridge_thread,
+        args=(
+            gpu_mp_q,
             gpu_progress_q,
             gpu_result_q,
+            strategy_display_name,
             start_event,
+            gpu_process,
         ),
-        name="GPU-Thread",
+        name="GPU-Bridge",
         daemon=True,
     )
 
@@ -2150,6 +2217,7 @@ def run_progressive_rebalancing(
             transaction_cost_factor,
             cpu_display_name,
             cpu_mp_q,
+            forecast_provider_path,
         ),
         name="CPU-Process",
         daemon=True,
@@ -2164,13 +2232,15 @@ def run_progressive_rebalancing(
             cpu_result_q,
             strategy_display_name,
             start_event,
+            cpu_process,
         ),
         name="CPU-Bridge",
         daemon=True,
     )
 
     # Start everything and signal immediately for a fair race
-    gpu_thread.start()
+    gpu_process.start()
+    gpu_bridge.start()
     cpu_process.start()
     cpu_bridge.start()
     start_event.set()
@@ -2543,19 +2613,20 @@ def run_progressive_rebalancing(
 
         time.sleep(PerformanceParams.MAIN_LOOP_DELAY)
 
-    gpu_thread.join()
-    cpu_process.join(timeout=300)
-    if cpu_process.is_alive():
-        cpu_process.terminate()
-        cpu_process.join(timeout=5)
-    cpu_bridge.join(timeout=10)
+    for proc, bridge in ((gpu_process, gpu_bridge), (cpu_process, cpu_bridge)):
+        proc.join(timeout=300)
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(timeout=5)
+        bridge.join(timeout=10)
 
     # Clean up multiprocessing resources to prevent leaked semaphores
-    try:
-        cpu_mp_q.close()
-        cpu_mp_q.join_thread()
-    except Exception:
-        pass
+    for mp_q in (gpu_mp_q, cpu_mp_q):
+        try:
+            mp_q.close()
+            mp_q.join_thread()
+        except Exception:
+            pass
 
     # Gather results
     out = {}
@@ -2605,7 +2676,11 @@ def main():
             if DefaultValues.DATASET_NAME in datasets
             else 0
         )
-        _dataset_labels = {ds: f"Dataset {i + 1}" for i, ds in enumerate(datasets)}
+        # Masked names still show the size, so the datasets can be told apart.
+        _dataset_labels = {
+            ds: f"Dataset {i + 1} ({get_dataset_num_assets(ds) or '?'} stocks)"
+            for i, ds in enumerate(datasets)
+        }
         dataset_name = st.selectbox(
             "Dataset",
             datasets,
@@ -2650,6 +2725,29 @@ def main():
                 min_value=_ds_min_date,
                 max_value=_ds_max_date,
             )
+
+        # Forecast mode: off by default (NVIDIA's historical estimates).
+        use_forecasts = st.toggle(
+            "Use forecasts (bundled LightGBM + GARCH models)",
+            value=False,
+            help=(
+                "Replace the historical estimates with forecasts from the bundled "
+                "placeholder models, which stand in for your own. The models are "
+                "trained before the backtest starts and every 3 months after, each "
+                "time on data before that date only, so no decision sees the future. "
+                "The bundled models are not a source of excess returns."
+            ),
+        )
+        if use_forecasts:
+            _n_assets = get_dataset_num_assets(dataset_name)
+            if _n_assets and _n_assets > 50:
+                st.warning(
+                    f"Forecast mode is intended for a dataset of about 30 stocks. This "
+                    f"dataset has {_n_assets} stocks: model training time and memory "
+                    "grow faster than the number of stocks (one feature compares "
+                    "every pair of stocks), so expect minutes of training and several "
+                    "GB of memory."
+                )
 
         # Portfolio Constraints (user-friendly names with technical help)
         st.subheader("💼 Portfolio Allocation")
@@ -2711,6 +2809,33 @@ def main():
             10000,
             1000,
             help="Number of scenarios (num_scen) — how many return scenarios to simulate for risk estimation.",
+        )
+        scenario_generator = st.selectbox(
+            "Scenario Generator",
+            ["Whitened KDE", "Standard KDE"],
+            index=0,
+            help=(
+                "How return scenarios are simulated from history. Whitened KDE "
+                "keeps the historical correlation between stocks (bandwidth in "
+                "standard deviations). Standard KDE is the package default; it adds "
+                "independent noise per stock, which inflates volatility and weakens "
+                "correlation as the bandwidth grows (bandwidth in daily-return units)."
+            ),
+        )
+        whiten_kde = scenario_generator == "Whitened KDE"
+        kde_bandwidth = st.number_input(
+            "KDE Bandwidth",
+            min_value=0.0001,
+            max_value=2.0,
+            value=0.3 if whiten_kde else 0.0025,
+            step=0.05 if whiten_kde else 0.0005,
+            format="%.4f",
+            key=f"kde_bandwidth_{'whitened' if whiten_kde else 'standard'}",
+            help=(
+                "Smoothing width. Whitened: standard deviations (default 0.3). "
+                "Standard: daily return units (default 0.0025; the package's old "
+                "default 0.01 inflates volatility ~17% on daily returns)."
+            ),
         )
 
         # Rebalancing Strategy (simplified)
@@ -3193,7 +3318,10 @@ def main():
                 num_scen=num_scen,
                 fit_type="kde",
                 kde_settings=KDESettings(
-                    bandwidth=0.01, kernel="gaussian", device="GPU"
+                    bandwidth=kde_bandwidth,
+                    kernel="gaussian",
+                    device="GPU",
+                    whiten=whiten_kde,
                 ),
                 verbose=False,
             )
@@ -3201,7 +3329,10 @@ def main():
                 num_scen=num_scen,
                 fit_type="kde",
                 kde_settings=KDESettings(
-                    bandwidth=0.01, kernel="gaussian", device="CPU"
+                    bandwidth=kde_bandwidth,
+                    kernel="gaussian",
+                    device="CPU",
+                    whiten=whiten_kde,
                 ),
                 verbose=False,
             )
@@ -3288,6 +3419,36 @@ def main():
             with col_dev2:
                 st.caption(f"🖥️ **CPU:** {cpu_info}")
 
+            # Forecast mode: train every model the backtest will use once,
+            # before the race, so both sides share them and training time does
+            # not count against either side's solve time.
+            forecast_provider_path = None
+            forecast_training_time = None
+            if use_forecasts:
+                from portfolio_optimization.forecasting.config import ForecastingConfig
+                from portfolio_optimization.forecasting.estimate_provider import (
+                    ForecastEstimateProvider,
+                )
+
+                with st.spinner(
+                    "Preparing forecasts: training the models before the backtest "
+                    "start and every 3 months, each on data before that date only..."
+                ):
+                    _prices = pd.read_csv(dataset_path, index_col=0, parse_dates=True)
+                    _provider = ForecastEstimateProvider(
+                        ForecastingConfig(return_type=return_type), retrain_months=3
+                    ).fit_schedule(_prices, *trading_range)
+                    forecast_provider_path = str(
+                        Path(tempfile.gettempdir())
+                        / f"forecast_provider_{os.getpid()}.pkl"
+                    )
+                    _provider.save(forecast_provider_path)
+                    forecast_training_time = _provider.training_time
+                st.caption(
+                    f"🔮 Forecast models trained {len(_provider.models)} times "
+                    f"in {forecast_training_time:.1f}s (shared by GPU and CPU)."
+                )
+
             results = run_progressive_rebalancing(
                 dataset_path=str(dataset_path),
                 trading_range=trading_range,
@@ -3312,10 +3473,12 @@ def main():
                 cpu_solver_choice=cpu_solver_choice,
                 blog_mode=blog_mode,
                 notional=int(notional),
+                forecast_provider_path=forecast_provider_path,
             )
 
             # Cache results in session state so they persist across reruns
             st.session_state["last_results"] = results
+            st.session_state["last_forecast_training_time"] = forecast_training_time
             st.session_state["last_notional"] = int(notional)
             st.session_state["last_blog_mode"] = blog_mode
 
@@ -3330,8 +3493,20 @@ def main():
             st.markdown(
                 '<div class="section-header">📊 Summary</div>', unsafe_allow_html=True
             )
+            st.caption(
+                "Each side draws its own random scenarios, so the portfolios "
+                "differ slightly; the comparison is speed, not returns."
+            )
             g = results.get("GPU", {})
             c = results.get("CPU", {})
+            _forecast_training_time = st.session_state.get("last_forecast_training_time")
+            if _forecast_training_time is not None:
+                st.caption(
+                    f"🔮 Forecast mode: models trained once before the race in "
+                    f"{_forecast_training_time:.1f}s, shared by both sides and not "
+                    "included in the solve times. Forecast Time is the per-rebalance "
+                    "forecasting work on each side."
+                )
 
             col1, col2, col3 = st.columns([1, 1, 1])
 
@@ -3351,6 +3526,11 @@ def main():
                         "⚡ GPU Solve Time", f"{g.get('total_solve_time', 0.0):.3f}s"
                     )
                     st.metric("🔬 GPU KDE Time", f"{g.get('total_kde_time', 0.0):.3f}s")
+                    if _forecast_training_time is not None:
+                        st.metric(
+                            "🔮 GPU Forecast Time",
+                            f"{g.get('total_forecast_time', 0.0):.3f}s",
+                        )
                 else:
                     st.error("GPU failed")
 
@@ -3360,6 +3540,11 @@ def main():
                         "⚡ CPU Solve Time", f"{c.get('total_solve_time', 0.0):.3f}s"
                     )
                     st.metric("🔬 CPU KDE Time", f"{c.get('total_kde_time', 0.0):.3f}s")
+                    if _forecast_training_time is not None:
+                        st.metric(
+                            "🔮 CPU Forecast Time",
+                            f"{c.get('total_forecast_time', 0.0):.3f}s",
+                        )
                 else:
                     st.error("CPU failed")
 

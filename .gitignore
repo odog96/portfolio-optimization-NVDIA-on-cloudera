@@ -64,3 +64,24 @@ nv-base-output-*.html
 /BENCHMARK.md
 eval-results/
 nvskills-ci/
+
+# Workspace home-directory files (the project root is also the Cloudera AI
+# user's home directory) and personal session utilities
+.bash_history
+.claude.json
+.claude.json.tmp.*
+.Rprofile
+.cache/
+.config/
+.local/
+.nv/
+.cupy/
+.jupyter/
+.virtual_documents/
+.experiments/
+.claude/
+busy_timer.ipynb
+
+# Personal Claude Code instructions (local only)
+CLAUDE.md
+docs/development_notes.md

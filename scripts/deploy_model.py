@@ -10,8 +10,15 @@ import json
 import os
 import sys
 import time
+from pathlib import Path
 
-sys.path.insert(0, "/home/cdsw/portfolio-optimization")
+# Cloudera AI runs scripts cell by cell in a kernel where __file__ is undefined;
+# there the working directory is the project root.
+try:
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent
+except NameError:
+    PROJECT_ROOT = Path.cwd()
+sys.path.insert(0, str(PROJECT_ROOT))
 
 MODEL_NAME = os.environ.get("CAII_MODEL_NAME", "PortfolioReturnsForecaster")
 
@@ -25,7 +32,7 @@ if not project_id:
     print("CDSW_PROJECT_ID not set — not running in CML.")
     sys.exit(1)
 
-reg_info_path = "outputs/registration_info.json"
+reg_info_path = str(PROJECT_ROOT / "outputs" / "registration_info.json")
 if os.path.exists(reg_info_path):
     with open(reg_info_path) as f:
         reg_info = json.load(f)
@@ -101,6 +108,9 @@ create_build_req = cmlapi.CreateModelBuildRequest(
     registered_model_version_id=str(model_version_id),
     runtime_identifier=runtime_id,
     comment="Portfolio returns forecaster",
+    # Required: omitting it makes the build fail instantly. 4 = Default CPU
+    # Group, 2 CPU / 4 GB (see cml_client.list_cpu_profiles()).
+    resource_profile_id=4,
 )
 
 try:
@@ -118,9 +128,10 @@ except ApiException as e:
 # ---------------------------------------------------------------------------
 # Step 4: Wait for build
 # ---------------------------------------------------------------------------
-print("\n--- Waiting for build (up to 15 min) ---")
+print("\n--- Waiting for build (up to 25 min) ---")
 
-max_checks = 30
+max_checks = 50
+built = False
 for i in range(max_checks):
     build_status = cml_client.get_model_build(
         project_id=project_id,
@@ -132,38 +143,44 @@ for i in range(max_checks):
 
     if status == "built":
         print("  Build complete.")
+        built = True
         break
     elif status == "build failed":
         print("  Build failed. Check CML UI for logs.")
         sys.exit(1)
     else:
         time.sleep(30)
-else:
-    print("  Build did not complete in time. Deploy manually when ready.")
-    sys.exit(0)
+
+# This runs as the optional Deploy Forecast Model job, so a build that never
+# finishes is reported as a failed job rather than a silent success.
+if not built:
+    print("  Build did not complete in time. Deploy manually when it does:")
+    print(f"  Models > {MODEL_NAME} > Builds > Deploy")
+    sys.exit(1)
 
 # ---------------------------------------------------------------------------
 # Step 5: Deploy
 # ---------------------------------------------------------------------------
-print("\n--- Deploying ---")
+if built:
+    print("\n--- Deploying ---")
 
-deploy_req = cmlapi.CreateModelDeploymentRequest(cpu="2", memory="4")
+    deploy_req = cmlapi.CreateModelDeploymentRequest(cpu="2", memory="4")
 
-try:
-    deployment = cml_client.create_model_deployment(
-        body=deploy_req,
-        project_id=project_id,
-        model_id=cml_model.id,
-        build_id=build.id,
-    )
-    print(f"  Deployment created: {deployment.id}")
-    print(f"\n=== Deployment complete ===")
-    print(f"  Model: {MODEL_NAME}")
-    print(f"  CML Model ID: {cml_model.id}")
-    print(f"  Build ID: {build.id}")
-    print(f"  Deployment ID: {deployment.id}")
-    print(f"\n  Access: Models > {MODEL_NAME} > Deployments")
-except ApiException as e:
-    print(f"  Deploy error: {e.reason}")
-    print(f"  {e.body}")
-    print(f"\n  Deploy manually: Models > {MODEL_NAME} > Builds > Deploy")
+    try:
+        deployment = cml_client.create_model_deployment(
+            body=deploy_req,
+            project_id=project_id,
+            model_id=cml_model.id,
+            build_id=build.id,
+        )
+        print(f"  Deployment created: {deployment.id}")
+        print(f"\n=== Deployment complete ===")
+        print(f"  Model: {MODEL_NAME}")
+        print(f"  CML Model ID: {cml_model.id}")
+        print(f"  Build ID: {build.id}")
+        print(f"  Deployment ID: {deployment.id}")
+        print(f"\n  Access: Models > {MODEL_NAME} > Deployments")
+    except ApiException as e:
+        print(f"  Deploy error: {e.reason}")
+        print(f"  {e.body}")
+        print(f"\n  Deploy manually: Models > {MODEL_NAME} > Builds > Deploy")

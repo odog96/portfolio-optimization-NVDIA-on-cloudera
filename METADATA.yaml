@@ -1,0 +1,53 @@
+# Cloudera Blueprint catalog metadata
+# Populate fields used by the master blueprint website and internal catalog.
+# Fields marked TODO need a value from the blueprint owner.
+
+# --- Identity ---
+name: "Optimize Investment Portfolios on GPUs"
+slug: "gpu-portfolio-optimization"              # URL-safe repo / catalog identifier
+description: "Build risk-aware investment portfolios in seconds with GPU-accelerated Mean-CVaR optimization, forecast-driven scenarios and backtesting on Cloudera AI."
+reprise_link: ""                                # TODO: public Reprise demo link (none recorded yet)
+
+# --- Classification (website filters) ---
+catalog_classification:
+  - Launchable (AMP)                            # ships a .project-metadata.yaml that deploys the whole project as a Cloudera AI AMP
+launchable: true
+lifecycle_status: Active
+
+# --- Industry & alignment ---
+industry: Financial Services
+industry_alignment: "Vertical"
+target_vertical: "Financial Services / Asset Management"
+
+# --- Tags (website search & browse) ---
+tags:
+  - portfolio-optimization
+  - risk-management
+  - cvar
+  - quantitative-finance
+  - gpu-acceleration
+  - nvidia-cuopt
+  - nvidia-cuml
+  - forecasting
+  - mlflow
+
+# --- Relationships ---
+product_mapping:                                # Cloudera products used
+  - Cloudera Machine Learning                   # Workbench sessions (GPU), jobs, AI Registry, model endpoints, Applications
+# model_dependencies:                           # No pre-trained or external AI models; the LightGBM and GARCH models are trained in the project.
+
+# --- Provenance ---
+publisher: cloudera
+source: NVIDIA Adaptation                       # adapted from NVIDIA's cuOpt portfolio optimization example (Apache 2.0)
+
+# --- Repository & assets ---
+public_github_link: ""                          # TODO: final public repo, e.g. https://github.com/cloudera/[repo]
+private_github_link: "https://github.com/odog96/portfolio-optimization-NVDIA-on-cloudera"   # development repo
+
+# --- Ownership ---
+maintainer_name: "Oliver Zarate"
+
+# --- Dates ---
+date_created: "2026-09-15"                      # first Cloudera commit on this fork
+date_updated: "2026-10-15"
+published_date: ""                              # TODO: set when published

@@ -4,7 +4,7 @@ This directory contains Jupyter notebooks that demonstrate GPU-accelerated portf
 
 ## Getting Started
 
-If you haven't already set up your Jupyter kernel, please refer to the [Getting Started](../README.md#installation-on-pytorch-container) section in the main README.
+If you haven't already set up your Jupyter kernel, please refer to the [Getting Started](../docs/NVIDIA_README.md#installation-on-pytorch-container) section in NVIDIA's original README (`docs/NVIDIA_README.md`).
 
 ## Recommended Order
 

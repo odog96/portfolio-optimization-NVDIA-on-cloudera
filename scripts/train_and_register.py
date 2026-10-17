@@ -1,15 +1,22 @@
 """Train forecasting models, log to MLflow, register in CML model registry.
 
 Follows the cmlapi pattern from CAI-baseline-workshop/module1/04_deploy.py:
-  1. Train models + export ONNX
-  2. Log ONNX to MLflow experiment run (with signature)
+  1. Train models
+  2. Log native LightGBM model to MLflow experiment run (with signature)
   3. Register in CML via cmlapi.CreateRegisteredModelRequest
 """
 import json
 import os
 import sys
+from pathlib import Path
 
-sys.path.insert(0, "/home/cdsw/portfolio-optimization")
+# Cloudera AI runs scripts cell by cell in a kernel where __file__ is undefined;
+# there the working directory is the project root.
+try:
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent
+except NameError:
+    PROJECT_ROOT = Path.cwd()
+sys.path.insert(0, str(PROJECT_ROOT))
 
 import mlflow
 import numpy as np
@@ -28,10 +35,11 @@ from portfolio_optimization.utils import get_input_data
 # Config
 # ---------------------------------------------------------------------------
 dataset = os.environ.get("PORTFOLIO_OPT_DATASET", "dow30")
-data_path = f"/home/cdsw/portfolio-optimization/data/stock_data/{dataset}.csv"
-model_dir = "/home/cdsw/portfolio-optimization/models"
+data_path = str(PROJECT_ROOT / "data" / "stock_data" / f"{dataset}.csv")
+model_dir = str(PROJECT_ROOT / "models")
 os.makedirs(model_dir, exist_ok=True)
-os.makedirs("outputs", exist_ok=True)
+OUTPUT_DIR = PROJECT_ROOT / "outputs"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 MODEL_NAME = "PortfolioReturnsForecaster"
 EXPERIMENT_NAME = os.environ.get(
@@ -44,7 +52,13 @@ prices = get_input_data(data_path)
 print(f"Loaded {prices.shape[1]} assets, {prices.shape[0]} trading days")
 print(f"Date range: {prices.index[0]} to {prices.index[-1]}")
 
-config = ForecastingConfig(forecast_horizon=5, training_window=756, return_type="LOG")
+# forecast_horizon=1 keeps the forecast mean on the same daily scale as the
+# GARCH covariance and the CVaR scenarios (which are built from freq=1 daily
+# returns). Changing it requires rescaling both — see docs/forecasting_design_decisions.md, section 4.
+FORECAST_HORIZON = int(os.environ.get("FORECAST_HORIZON", "1"))
+config = ForecastingConfig(
+    forecast_horizon=FORECAST_HORIZON, training_window=756, return_type="LOG"
+)
 
 # ---------------------------------------------------------------------------
 # Step 1: Train LightGBM
@@ -52,16 +66,29 @@ config = ForecastingConfig(forecast_horizon=5, training_window=756, return_type=
 print("\n--- Training LightGBM returns forecaster ---")
 returns_forecaster = ReturnsForecaster(config)
 metrics = returns_forecaster.train(prices)
+print(f"  Horizon:    {config.forecast_horizon} trading day(s)")
+print(f"  Split:      train <= {metrics['train_end']} | eval >= {metrics['eval_start']}")
 print(f"  Train RMSE: {metrics['train_rmse']:.6f}")
-print(f"  Eval RMSE:  {metrics['eval_rmse']:.6f}")
+print(f"  Eval RMSE:  {metrics['eval_rmse']:.6f}  (out-of-sample, chronological)")
 print(f"  Features:   {metrics['n_features']}")
-print(f"  Samples:    {metrics['n_samples']}")
+print(f"  Samples:    {metrics['n_samples']} "
+      f"({metrics['n_train_rows']} train / {metrics['n_eval_rows']} eval)")
+print("  --- skill diagnostics (read these before trusting the forecast) ---")
+print(f"  Baseline RMSE:        {metrics['baseline_rmse']:.6f}  "
+      f"(predict the training mean for every asset)")
+print(f"  Skill vs baseline:    {metrics['skill_vs_baseline']:+.4%}  "
+      f"(<= 0 means no better than the baseline)")
+print(f"  Directional accuracy: {metrics['directional_accuracy']:.4f}  "
+      f"(0.50 = coin flip)")
+print(f"  Prediction spread:    {metrics['pred_std']:.6f} vs actual "
+      f"{metrics['actual_std']:.6f} "
+      f"({metrics['pred_std'] / metrics['actual_std']:.1%} of actual)")
+if metrics["skill_vs_baseline"] < 0.01:
+    print("  NOTE: skill is under 1% — this forecast carries little information.")
+    print("        See docs/forecasting_design_decisions.md, section 4.")
 
 lgb_path = returns_forecaster.save(f"{model_dir}/returns_forecaster.lgb")
 print(f"  Saved native: {lgb_path}")
-
-onnx_path = returns_forecaster.export_onnx(f"{model_dir}/returns_forecaster.onnx")
-print(f"  Exported ONNX: {onnx_path}")
 
 # ---------------------------------------------------------------------------
 # Step 2: Train GARCH
@@ -90,10 +117,25 @@ X, y = build_training_data(
     config=config.features,
 )
 X_flat, y_flat = flatten_features_for_training(X, y)
-numeric_cols = X_flat.select_dtypes(include="number").columns
-sample_input = X_flat[numeric_cols].iloc[:5].values.astype(np.float32)
+# The model has 12 features: 11 numeric + `ticker`, a categorical that the
+# trees split on by integer category code. The served signature must cover all
+# 12 columns (ticker as its code) and be float64 — JSON numbers always arrive
+# as float64, so a float32 tensor spec can never be satisfied over HTTP.
+ticker_categories = X_flat["ticker"].cat.categories.tolist()
+serving_frame = X_flat.assign(ticker=X_flat["ticker"].cat.codes)
+sample_input = serving_frame.iloc[:5].values.astype(np.float64)
 sample_preds = returns_forecaster.model.predict(X_flat.iloc[:5])
 signature = infer_signature(sample_input, sample_preds)
+ticker_map_path = os.path.join(model_dir, "ticker_categories.json")
+with open(ticker_map_path, "w") as f:
+    json.dump(
+        {
+            "feature_order": serving_frame.columns.tolist(),
+            "ticker_codes": {t: i for i, t in enumerate(ticker_categories)},
+        },
+        f,
+        indent=2,
+    )
 
 with mlflow.start_run(run_name="train_returns_forecaster") as run:
     mlflow.lightgbm.log_model(
@@ -104,8 +146,15 @@ with mlflow.start_run(run_name="train_returns_forecaster") as run:
     mlflow.log_metrics({
         "train_rmse": metrics["train_rmse"],
         "eval_rmse": metrics["eval_rmse"],
+        "baseline_rmse": metrics["baseline_rmse"],
+        "skill_vs_baseline": metrics["skill_vs_baseline"],
+        "directional_accuracy": metrics["directional_accuracy"],
+        "pred_std": metrics["pred_std"],
+        "actual_std": metrics["actual_std"],
     })
+    mlflow.log_param("forecast_horizon", config.forecast_horizon)
     mlflow.log_artifact(garch_path)
+    mlflow.log_artifact(ticker_map_path)
     mlflow.set_tag("model_type", "lightgbm_native")
     mlflow.set_tag("dataset", dataset)
 
@@ -167,9 +216,9 @@ else:
             "experiment_id": experiment_id,
             "eval_rmse": metrics["eval_rmse"],
         }
-        with open("outputs/registration_info.json", "w") as f:
+        with open(OUTPUT_DIR / "registration_info.json", "w") as f:
             json.dump(deploy_info, f, indent=2)
-        print(f"  Saved: outputs/registration_info.json")
+        print(f"  Saved: {OUTPUT_DIR / 'registration_info.json'}")
 
     except ApiException as e:
         print(f"  CML API error: {e.reason}")

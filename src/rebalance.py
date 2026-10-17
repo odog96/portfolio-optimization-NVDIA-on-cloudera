@@ -67,6 +67,14 @@ class rebalance_portfolio:
         Rebalancing trigger conditions with type and threshold.
     print_opt_result : bool, default False
         Whether to print detailed optimization results.
+    estimate_provider : callable, optional
+        Hook to replace the historical estimates before each optimization.
+        Called as ``estimate_provider(returns_dict=..., cvar_params=...,
+        prices=..., date=...)`` with the scenario data, the CVaR parameters,
+        the prices up to the rebalance date only, and that date. Returns
+        ``(returns_dict, cvar_params, api_settings)``; ``api_settings`` may be
+        None for the defaults. When None (the default), the historical
+        estimates are used unchanged.
     """
 
     def __init__(
@@ -82,8 +90,10 @@ class rebalance_portfolio:
         solver_settings: dict,
         re_optimize_criteria: dict,
         print_opt_result: bool = False,
+        estimate_provider=None,
     ):
         """Initialize rebalancing portfolio with optimization parameters."""
+        self.estimate_provider = estimate_provider
         self.dataset_directory = dataset_directory
         self.trading_start = pd.to_datetime(trading_start)
         self.trading_end = pd.to_datetime(trading_end)
@@ -242,9 +252,23 @@ class rebalance_portfolio:
                     optimize_returns_dict, self.scenario_generation_settings
                 )
 
+                optimize_cvar_params, api_settings = self.cvar_params, None
+                if self.estimate_provider is not None:
+                    (
+                        optimize_returns_dict,
+                        optimize_cvar_params,
+                        api_settings,
+                    ) = self.estimate_provider(
+                        returns_dict=optimize_returns_dict,
+                        cvar_params=self.cvar_params,
+                        prices=self.price_data.loc[:backtest_date],
+                        date=backtest_date,
+                    )
+
                 re_optimize_problem = cvar_optimizer.CVaR(
                     returns_dict=optimize_returns_dict,
-                    cvar_params=self.cvar_params,
+                    cvar_params=optimize_cvar_params,
+                    api_settings=api_settings,
                     existing_portfolio=existing_portfolio,
                 )
 
